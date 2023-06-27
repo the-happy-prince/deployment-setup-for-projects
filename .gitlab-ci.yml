@@ -1,0 +1,64 @@
+image: docker:latest
+
+cache:
+  paths:
+    - .docker/
+
+services:
+  - docker:dind 
+
+build:
+  variables:
+    GIT_STRATEGY: clone
+    GIT_SUBMODULE_STRATEGY: recursive
+  stage: build
+  before_script:
+    - apk update
+    - echo "sourcing default"; source ./devops/conf/default.conf
+    - if [ ${CI_COMMIT_BRANCH} == "dev" ]; then echo "sourcing dev"; source ./devops/conf/dev.conf; fi;
+    - if [ ${CI_COMMIT_BRANCH} == "main" ]; then echo "sourcing prod"; source ./devops/conf/prod.conf; fi;
+  script:
+    - docker build -t $DOCKER_IMAGE .
+    - docker login registry.gitlab.com -u $DOCKER_USER -p $PERSONAL_ACCESS_TOKEN
+    - docker push $DOCKER_IMAGE
+  tags:
+    - $CI_COMMIT_BRANCH
+  only:
+    - dev
+    - main
+
+plan:
+  stage: test
+  before_script:
+    - apk update
+    - apk add nomad
+    - echo "sourcing default"; source ./devops/conf/default.conf
+    - if [ ${CI_COMMIT_BRANCH} == "dev" ]; then echo "sourcing dev"; source ./devops/conf/dev.conf; fi;
+    - if [ ${CI_COMMIT_BRANCH} == "main" ]; then echo "sourcing prod"; source ./devops/conf/prod.conf; fi;
+  script:
+    - echo $DOCKER_IMAGE; echo $NOMAD_ADDRESS; echo $DNS;
+    - export NOMAD_ADDR=$NOMAD_ADDRESS
+    - nomad job plan -var="docker_image_url=$DOCKER_IMAGE" -var="domain=$DNS" ./devops/nomad/atomic.nomad || true
+  tags:
+    - $CI_COMMIT_BRANCH
+  only:
+    - dev
+    - main
+
+deploy:
+  stage: deploy
+  before_script:
+    - apk update
+    - apk add nomad
+    - echo "sourcing default"; source ./devops/conf/default.conf
+    - if [ ${CI_COMMIT_BRANCH} == "dev" ]; then echo "sourcing dev"; source ./devops/conf/dev.conf; fi;
+    - if [ ${CI_COMMIT_BRANCH} == "main" ]; then echo "sourcing prod"; source ./devops/conf/prod.conf; fi;
+  script:
+    - export NOMAD_ADDR=$NOMAD_ADDRESS
+    - nomad job run -var="docker_image_url=$DOCKER_IMAGE" -var="domain=$DNS" ./devops/nomad/atomic.nomad
+    - nomad job run -var="docker_image_url=$DOCKER_IMAGE" ./devops/nomad/atomic_celery.nomad
+  tags:
+    - $CI_COMMIT_BRANCH
+  only:
+    - dev
+    - main
